@@ -1,7 +1,9 @@
 # Chess by Rose Parker (Skull Dev Ops)
 # Real chess rules: check, checkmate, stalemate, castling, en passant and promotion.
 # Click a piece to pick it up, then click a highlighted square to move it.
-# White moves first. Press R to start a new game.
+# You play White against the computer (Black). Press C to switch to two players.
+# Press R to start a new game.
+import random
 import tkinter as tk
 
 SQ = 80                       # size of one square in pixels
@@ -29,6 +31,8 @@ moves = []                    # squares that piece can move to
 moved = set()                 # squares whose king or rook has moved (for castling)
 en_passant = None             # square a pawn can capture into en passant
 last_move = None              # ((from_r, from_c), (to_r, to_c)) for highlighting
+vs_computer = True            # the computer plays Black
+VALUE = {"p": 100, "n": 320, "b": 330, "r": 500, "q": 900, "k": 20000}
 
 
 def is_white(p):
@@ -206,9 +210,78 @@ def draw_board():
                 draw_piece(board[r][c], c * SQ + SQ // 2, r * SQ + SQ // 2 + 2)
 
 
+def evaluate():
+    """Score the board from Black's side: material plus a nudge toward the center."""
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if p:
+                v = VALUE[p.lower()] + (6 - abs(3.5 - c) - abs(3.5 - r)) * 4
+                if p.lower() == "p":
+                    v += (r if p.islower() else 7 - r) * 6      # pawns like to advance
+                score += v if p.islower() else -v
+    return score
+
+
+def all_moves(side, legal=True):
+    out = []
+    for r in range(8):
+        for c in range(8):
+            if owner(board[r][c]) == side:
+                for m in (legal_moves(r, c) if legal else pseudo_moves(r, c)):
+                    out.append(((r, c), m))
+    return out
+
+
+def computer_move():
+    """Look two moves ahead: pick Black's move that leaves White's best reply weakest."""
+    global turn, last_move
+    best, best_score = [], None
+    for (sr, sc), (r, c) in all_moves("black"):
+        rec = make_move(sr, sc, r, c)
+        worst = None
+        for (wr, wc), (tr, tc) in all_moves("white", legal=False):
+            rec2 = make_move(wr, wc, tr, tc)
+            val = evaluate()
+            undo_move(rec2)
+            worst = val if worst is None else min(worst, val)
+        if worst is None:                                     # White has no moves
+            worst = evaluate() + (100000 if in_check("white") else 0)
+        undo_move(rec)
+        if best_score is None or worst > best_score:
+            best, best_score = [((sr, sc), (r, c))], worst
+        elif worst == best_score:
+            best.append(((sr, sc), (r, c)))
+    (sr, sc), (r, c) = random.choice(best)
+    make_move(sr, sc, r, c)
+    moved.update({(sr, sc), (r, c)})
+    last_move = ((sr, sc), (r, c))
+    finish_turn("black")
+    draw_board()
+
+
+def finish_turn(mover):
+    global turn
+    turn = "black" if mover == "white" else "white"
+    if not has_any_move(turn):
+        if in_check(turn):
+            status.config(text=f"Checkmate! {mover.title()} wins. Press R to play again.")
+        else:
+            status.config(text="Stalemate, it's a draw. Press R to play again.")
+        turn = "over"
+    elif in_check(turn):
+        status.config(text=f"{turn.title()} is in check!")
+    else:
+        status.config(text=f"{turn.title()} to move")
+    if turn == "black" and vs_computer:
+        status.config(text="Computer is thinking...")
+        root.after(300, computer_move)
+
+
 def click(event):
     global selected, moves, turn, last_move
-    if turn == "over":
+    if turn == "over" or (vs_computer and turn == "black"):
         return
     c, r = event.x // SQ, event.y // SQ
     if not (0 <= r < 8 and 0 <= c < 8):
@@ -219,17 +292,7 @@ def click(event):
         moved.update({(sr, sc), (r, c)})
         last_move = ((sr, sc), (r, c))
         selected, moves = None, []
-        mover, turn = turn, ("black" if turn == "white" else "white")
-        if not has_any_move(turn):
-            if in_check(turn):
-                status.config(text=f"Checkmate! {mover.title()} wins. Press R to play again.")
-            else:
-                status.config(text="Stalemate, it's a draw. Press R to play again.")
-            turn = "over"
-        elif in_check(turn):
-            status.config(text=f"{turn.title()} is in check!")
-        else:
-            status.config(text=f"{turn.title()} to move")
+        finish_turn(turn)
     elif owner(board[r][c]) == turn:
         selected, moves = (r, c), legal_moves(r, c)
     else:
@@ -237,12 +300,18 @@ def click(event):
     draw_board()
 
 
+def toggle_computer(event=None):
+    global vs_computer
+    vs_computer = not vs_computer
+    reset()
+
+
 def reset(event=None):
     global board, turn, selected, moves, en_passant, last_move
     board[:] = [list(row) for row in START]
     turn, selected, moves, en_passant, last_move = "white", None, [], None, None
     moved.clear()
-    status.config(text="White to move")
+    status.config(text="White to move" + ("  (vs computer, C for two players)" if vs_computer else "  (two players, C for computer)"))
     draw_board()
 
 
@@ -252,11 +321,13 @@ root = tk.Tk()
 root.title("Chess")
 canvas = tk.Canvas(root, width=8 * SQ, height=8 * SQ, highlightthickness=0)
 canvas.pack()
-status = tk.Label(root, text="White to move", font=("Arial", 16))
+status = tk.Label(root, text="White to move  (vs computer, C for two players)", font=("Arial", 16))
 status.pack(pady=6)
 canvas.bind("<Button-1>", click)
 root.bind("r", reset)
 root.bind("R", reset)
+root.bind("c", toggle_computer)
+root.bind("C", toggle_computer)
 
 draw_board()
 root.mainloop()
